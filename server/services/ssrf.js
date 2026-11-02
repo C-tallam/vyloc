@@ -10,10 +10,26 @@ const blocked = new net.BlockList();
   ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4],
 ].forEach(([a, p]) => blocked.addSubnet(a, p, 'ipv4'));
 [
-  ['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8], ['2001:db8::', 32], ['::ffff:0:0', 96], ['64:ff9b::', 96],
+  ['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8], ['2001:db8::', 32], ['64:ff9b::', 96],
 ].forEach(([a, p]) => blocked.addSubnet(a, p, 'ipv6'));
 
-export const isBlockedIp = (ip) => blocked.check(ip, net.isIPv6(ip) ? 'ipv6' : 'ipv4');
+// Note: Node's BlockList treats every IPv4 address as IPv4-mapped IPv6, so '::ffff:0:0/96' must NOT be added as a rule
+// (it would block all of IPv4). IPv4-mapped IPv6 addresses are unwrapped and checked as IPv4 instead.
+export function isBlockedIp(ip) {
+  if (!net.isIPv6(ip)) return blocked.check(ip, 'ipv4');
+  let v6;
+  try { v6 = new URL(`http://[${ip}]/`).hostname.slice(1, -1).toLowerCase(); } catch { return true; } // unparseable: refuse
+  if (v6.startsWith('::ffff:')) {
+    const rest = v6.slice(7);
+    let v4 = rest;
+    if (!rest.includes('.')) {
+      const [h1, h2] = rest.split(':').map((h) => parseInt(h, 16));
+      v4 = `${h1 >> 8}.${h1 & 255}.${h2 >> 8}.${h2 & 255}`;
+    }
+    return blocked.check(v4, 'ipv4');
+  }
+  return blocked.check(v6, 'ipv6');
+}
 
 export class TargetError extends Error {
   constructor(message) { super(message); this.status = 400; }
