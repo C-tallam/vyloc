@@ -63,16 +63,39 @@ export function checkTcp(hostRaw, port) {
   });
 }
 
+// Two lookups run at the same time and the DOMAIN IS UP if either one resolves it:
+//  1. a direct query to public resolvers (not affected by the local network's DNS settings)
+//  2. the operating system's own resolver (works when direct DNS queries are blocked by the network)
+const PUBLIC_RESOLVERS = ['1.1.1.1', '8.8.8.8'];
+
+async function viaPublicResolvers(hostname) {
+  const resolver = new dns.Resolver({ timeout: 2500, tries: 1 });
+  resolver.setServers(PUBLIC_RESOLVERS);
+  let records = [];
+  try { records = await resolver.resolve4(hostname); } catch (e) { if (e.code !== 'ENODATA') throw e; }
+  if (!records.length) records = await resolver.resolve6(hostname);
+  if (!records.length) throw Object.assign(new Error('no records'), { code: 'ENODATA' });
+  return true;
+}
+
+async function viaSystemResolver(hostname) {
+  const addrs = await dns.lookup(hostname, { all: true });
+  if (!addrs.length) throw Object.assign(new Error('no records'), { code: 'ENODATA' });
+  return true;
+}
+
 export async function checkDns(hostname) {
   const start = performance.now();
-  const withTimeout = (p) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error('timeout'), { code: 'ETIMEOUT' })), TIMEOUT_MS))]);
+  const timeout = new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error('timeout'), { code: 'ETIMEOUT' })), TIMEOUT_MS));
   try {
-    let records = [];
-    try { records = await withTimeout(dns.resolve4(hostname)); } catch (e) { if (e.code !== 'ENODATA') throw e; }
-    if (!records.length) records = await withTimeout(dns.resolve6(hostname));
-    return { ok: records.length > 0, latency: Math.round(performance.now() - start) };
+    await Promise.race([Promise.any([viaPublicResolvers(hostname), viaSystemResolver(hostname)]), timeout]);
+    return { ok: true, latency: Math.round(performance.now() - start) };
   } catch (err) {
-    return { ok: false, error: err.code === 'ENOTFOUND' ? 'Domain not found (NXDOMAIN)' : describe(err) };
+    const errors = err instanceof AggregateError ? err.errors : [err];
+    const code = ['ENOTFOUND', 'ENODATA'].find((c) => errors.some((e) => e.code === c));
+    if (code === 'ENOTFOUND') return { ok: false, error: 'Domain not found (NXDOMAIN)' };
+    if (code === 'ENODATA') return { ok: false, error: ERRORS.ENODATA };
+    return { ok: false, error: describe(errors[0]) };
   }
 }
 
