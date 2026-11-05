@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /status/
+Allow: /privacy
+Allow: /terms
+Disallow: /monitors
+Disallow: /incidents
+Disallow: /settings
